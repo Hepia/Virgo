@@ -1,0 +1,29 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <title>Web Server Test</title>
+  <meta charset="UTF-8">
+</head>
+<body>
+  <h1>Welcome to the test web server</h1>
+  <p>This is a test page for HTTP traffic simulation.</p>
+  <a href="page2.html">Subpage</a>
+
+  <script>
+    // Ping the server to simulate user activity
+    function pingServer() {
+        fetch('ping.html') // Sends the ping
+            .catch(err => console.error('Ping failed:', err));
+
+
+        // Sets a random delay between 2 and 20 seconds before the next ping.
+        const delay = Math.floor(Math.random() * (20000 - 2000 + 1)) + 2000;
+        console.log(`Next ping in ${delay / 1000}s`);
+        setTimeout(pingServer, delay);
+    }
+
+    // Initial launch
+    pingServer();
+  </script>
+</body>
+</html>

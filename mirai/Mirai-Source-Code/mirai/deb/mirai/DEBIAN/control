@@ -1,0 +1,7 @@
+Package: mirai-bot-and-cnc
+Version: 1.0
+Section: base
+Priority: optional
+Architecture: arm64
+Maintainer: Joachim Schmidt <joachim.schmidt@hesge.ch>
+Description: Mirai bot and CnC - For academic purposes only

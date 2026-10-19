@@ -1,0 +1,7 @@
+Package: mmc-host-daemon
+Version: 1.1.0
+Architecture: arm64
+Maintainer: MMC Maintainer <maintainer@example.com>
+Description: MMC (Message to Machine Communication) - mmc-host-daemon
+ Component of the MMC system for sending messages to virtual machines.
+Depends: libjson-c5, libreadline8, libssl3

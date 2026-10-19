@@ -1,0 +1,14 @@
+[Unit]
+Description=MMC VM Daemon
+After=network.target
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/mmc-vm-daemon
+Restart=always
+User=root
+StandardOutput=append:/var/log/mmc-vm.log
+StandardError=append:/var/log/mmc-vm.log
+
+[Install]
+WantedBy=multi-user.target 

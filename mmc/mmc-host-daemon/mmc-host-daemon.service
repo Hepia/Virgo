@@ -1,0 +1,14 @@
+[Unit]
+Description=MMC Host Daemon
+After=network.target
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/mmc-host-daemon
+Restart=always
+User=root
+StandardOutput=append:/var/log/mmc-host.log
+StandardError=append:/var/log/mmc-host.log
+
+[Install]
+WantedBy=multi-user.target 

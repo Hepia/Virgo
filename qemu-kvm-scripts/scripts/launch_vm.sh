@@ -1,0 +1,761 @@
+#!/bin/bash
+
+RED="\e[91m"
+GREEN="\e[92m"
+YELLOW="\e[93m"
+BLUE="\e[94m"
+WHITE="\e[97m"
+ENDCOLOR="\e[0m"
+
+INFO_MSG="${WHITE}[INFO]:    ${ENDCOLOR}"
+SUCCESS_MSG="${GREEN}[SUCCESS]: ${ENDCOLOR}"
+WARNING_MSG="${YELLOW}[WARNING]: ${ENDCOLOR}"
+ERROR_MSG="${RED}[ERROR]:   ${ENDCOLOR}"
+
+# Path to the JSON configuration file
+
+# Get the last part of the current directory
+dir_name="${PWD##*/}"
+
+# Check the directory name and execute the corresponding command.
+case "${dir_name}" in
+    scripts)
+        CONFIG_FILE="../config/vms/config.json"
+        DRIVER_FILE=$(jq -r '.DRIVER_FILE' "${CONFIG_FILE}")
+        DRIVER_FILE="../${DRIVER_FILE}"
+        ;;
+    qemu-kvm-scripts)
+        CONFIG_FILE="./config/vms/config.json"
+        DRIVER_FILE=$(jq -r '.DRIVER_FILE' "${CONFIG_FILE}")
+        DRIVER_FILE="./${DRIVER_FILE}"
+        ;;
+    *)
+        echo -e "${ERROR_MSG}Unrecognised directory '${WHITE}${dir_name}'${ENDCOLOR}" >&2
+        exit 1
+        ;;
+esac
+
+# Extract values from the JSON file and assign them to variables
+QEMU=$(jq -r '.QEMU' "${CONFIG_FILE}")
+VM_NAME=$(jq -r '.VM_NAME' "${CONFIG_FILE}")
+MACHINE=$(jq -r '.MACHINE' "${CONFIG_FILE}")
+MEMORY=$(jq -r '.MEMORY' "${CONFIG_FILE}")
+CPUS=$(jq -r '.CPUS' "${CONFIG_FILE}")
+DISK_IMAGE=$(jq -r '.DISK_IMAGE' "${CONFIG_FILE}")
+DISK_SIZE=$(jq -r '.DISK_SIZE' "${CONFIG_FILE}")
+DISK_FORMAT=$(jq -r '.DISK_FORMAT' "${CONFIG_FILE}")
+ISO_PATH=$(jq -r '.ISO_PATH' "${CONFIG_FILE}")
+USERNAME_1=$(jq -r '.USERNAME_1' "${CONFIG_FILE}")
+FOLDERS_TO_SHARE=($(jq -r '.FOLDERS_TO_SHARE[]' "${CONFIG_FILE}"))
+SPICE_IP_ADDR=$(jq -r '.SPICE_IP_ADDR' "${CONFIG_FILE}")
+SPICE_PORT=$(jq -r '.SPICE_PORT' "${CONFIG_FILE}")
+SSH_PORT=$(jq -r '.SSH_PORT' "${CONFIG_FILE}")
+USB_DEVICE_NAMES=($(jq -r '.USB_DEVICE_NAMES[]' "${CONFIG_FILE}"))
+
+# Check the directory name and execute the corresponding command.
+case "${dir_name}" in
+    scripts)
+        DISK_IMAGE="../${DISK_IMAGE}"
+        ISO_PATH="../${ISO_PATH}"
+        ;;
+    qemu-kvm-scripts)
+        DISK_IMAGE="./${DISK_IMAGE}"
+        ISO_PATH="./${ISO_PATH}"
+        ;;
+    *)
+        echo -e "${ERROR_MSG}Unrecognised directory '${WHITE}${dir_name}'${ENDCOLOR}" >&2
+        exit 1
+        ;;
+esac
+
+BRIDGE=$(jq -r '.BRIDGE' "${DRIVER_FILE}")
+NETWORK=$(jq -r '.NETWORK' "${DRIVER_FILE}")
+USB_EHCI=$(jq -r '.USB_EHCI' "${DRIVER_FILE}")
+USB_REDIR=$(jq -r '.USB_REDIR' "${DRIVER_FILE}")
+XILINX_FPGA_ID=$(jq -r '.XILINX_FPGA_ID' "${DRIVER_FILE}")
+XILINX_FPGA=$(jq -r '.XILINX_FPGA' "${DRIVER_FILE}")
+VGA=$(jq -r '.VGA' "${DRIVER_FILE}")
+SCREEN=$(jq -r '.SCREEN' "${DRIVER_FILE}")
+SOUND=$(jq -r '.SOUND' "${DRIVER_FILE}")
+SERIAL_PASSTHROUGH=$(jq -r '.SERIAL_PASSTHROUGH' "${DRIVER_FILE}")
+SPICE=$(jq -r '.SPICE' "${DRIVER_FILE}")
+QGA_SOCKET=$(jq -r '.QGA_SOCKET' "${DRIVER_FILE}")
+QGA=$(jq -r '.QGA' "${DRIVER_FILE}")
+MISC=$(jq -r '.MISC' "${DRIVER_FILE}")
+KERNEL_ARG=$(jq -r '.KERNEL_ARG' "${DRIVER_FILE}")
+
+if [ -n "${KERNEL_ARG}" ]; then
+    MISC="${MISC} -append "
+fi
+
+# Re-evaluate variables that have references to other variables
+#NETWORK=$(eval echo "${NETWORK}")
+FOLDERS_TO_SHARE=$(eval echo "${FOLDERS_TO_SHARE}")
+XILINX_FPGA=$(eval echo "${XILINX_FPGA}")
+#SPICE=$(eval echo "${SPICE}")
+QGA=$(eval echo "${QGA}")
+NETWORK=$(eval echo "${NETWORK}")
+
+# How to mount this shared folder
+# sudo mkdir /mnt/shared
+# sudo mount -t 9p -o trans=virtio hostshare /mnt/shared
+
+SPICE_BASE_PORT=${SPICE_PORT}
+SPICE_MAX_PORT=$((${SPICE_PORT} + 99))
+
+SSH_BASE_PORT=${SSH_PORT}
+SSH_MAX_PORT=$((${SSH_PORT} + 99))
+
+# Function to add USB devices based on keywords, including vendor and product IDs
+add_usb_devices() {
+    # Collect all passed keywords into an array
+    local keywords=("$@")
+    local usb_devices=""
+
+    # Loop through all provided keywords
+    for keyword in "${keywords[@]}"; do
+        # Find all matching USB devices
+        while IFS= read -r device; do
+            # Extract bus, device ID, vendor ID, and product ID
+            hostbus=$(echo "$device" | awk '{print $2}' | sed 's/^0*//')
+            hostaddr=$(echo "$device" | awk '{print $4}' | sed 's/^0*//' | sed 's/://')
+            vendor_id=$(echo "$device" | awk '{print $6}' | cut -d':' -f1)
+            product_id=$(echo "$device" | awk '{print $6}' | cut -d':' -f2)
+
+            # Validate extracted values
+            if [[ ! "$hostbus" =~ ^[0-9]+$ ]] || [[ ! "$hostaddr" =~ ^[0-9]+$ ]] || \
+               [[ ! "$vendor_id" =~ ^[0-9a-fA-F]+$ ]] || [[ ! "$product_id" =~ ^[0-9a-fA-F]+$ ]]; then
+                echo -e "${ERROR_MSG}Invalid data extracted for device: $device"
+                continue
+            fi
+
+            # Append to usb_devices list (QEMU supports vendorid/productid syntax)
+            usb_devices+="-device usb-host,hostbus=${hostbus},hostaddr=${hostaddr},vendorid=0x${vendor_id},productid=0x${product_id}\n"
+        done < <(lsusb | grep -i "${keyword}")
+    done
+
+    # Output the final device list
+    echo -e "${usb_devices}"
+}
+
+construct_qemu_share_params() {
+    local share_type=$1  # Either 'virtio-fs' or '9p'
+    local mount_tag_prefix=$2  # Prefix for the mount tags (if needed)
+    shift 2  # Remove first two arguments (share_type and mount_tag_prefix)
+    local folders=("$@")  # Array of directories to share
+    local qemu_params=""
+
+    if [ ${#folders[@]} -eq 0 ]; then
+        # Loop through each folder and construct the share parameters
+        local index=1
+        for folder in "${folders[@]}"; do
+            local fsdev_id="fsdev${index}"
+            local mount_tag="${mount_tag_prefix}_tag${index}"
+
+            if [[ "$share_type" == "virtio-fs" ]]; then
+                # virtio-fs sharing
+                qemu_params+="-fsdev local,id=${fsdev_id},path=${folder},security_model=none "
+                qemu_params+="-device vhost-user-fs-pci,server=on,chnid=${mount_tag} "
+            elif [[ "$share_type" == "9p" ]]; then
+                # 9p sharing
+                # Unique fsdev for each folder to avoid ID collisions
+                qemu_params+="-fsdev local,id=${fsdev_id},path=${folder},security_model=none "
+                # Using unique mount_tag and fsdev for each device to prevent conflicts
+                qemu_params+="-device virtio-9p-pci,fsdev=${fsdev_id},mount_tag=${mount_tag} "
+            else
+                echo -e "${ERROR_MSG} Unsupported share type '$share_type'. Please use 'virtio-fs' or '9p'."
+                return 1
+            fi
+
+            index=$((index + 1))  # Increment the index for the next folder
+        done
+
+        # Output the constructed QEMU parameters
+        echo "$qemu_params"
+    fi
+}
+
+# Function to check if jq is installed
+check_jq() {
+    echo -e "${INFO_MSG}Checking jq installation..."
+    if ! command -v jq &> /dev/null; then
+        echo -e "${ERROR_MSG}jq is not installed. Please install it to run this script."
+        exit 1
+    else
+        echo -e "${SUCCESS_MSG}jq is installed."
+    fi
+}
+
+# Function to check if QEMU is installed
+check_qemu() {
+    echo -e "${INFO_MSG}Checking QEMU installation..."
+    if ! command -v ${QEMU} &> /dev/null; then
+        echo -e "${ERROR_MSG}QEMU is not installed. Please install it to run this script."
+        exit 1
+    else
+        echo -e "${SUCCESS_MSG}QEMU is installed."
+    fi
+}
+
+# Function to check if QEMU is installed and if its version is at least 5.0
+check_qemu_version() {
+    local min_major_version=5
+
+    # Check if qemu is installed
+    if ! command -v ${QEMU} &> /dev/null; then
+        echo -e "${ERROR_MSG}QEMU is not installed."
+        exit 1
+    fi
+
+     # Get the installed QEMU version and extract the first numeric section
+    qemu_version=$(${QEMU} -version | head -n 1 | grep -oP '\d+\.\d+\.\d+' | head -n 1)
+
+    # Ensure we captured a valid version
+    if [[ -z "$qemu_version" ]]; then
+        echo -e "${ERROR_MSG}Could not extract QEMU version."
+        exit 1
+    fi
+
+    # Extract the major version
+    major_version=$(echo "$qemu_version" | cut -d '.' -f 1)
+
+    # Check if the major version is 5 or greater
+    if [ "${major_version}" -ge "${min_major_version}" ]; then
+        echo -e "${SUCCESS_MSG}QEMU version is $qemu_version. Version is at least ${min_major_version}.0."
+    else
+        echo -e "${ERROR_MSG}QEMU version is $qemu_version. Version is below ${min_major_version}.0."
+        exit 1
+    fi
+}
+
+# Function to check if KVM is installed and supported
+check_kvm() {
+    # Check if KVM modules are loaded
+    if ! lsmod | grep -q kvm; then
+        # If not loaded as modules, check if KVM is compiled into the kernel via dmesg
+        if ! dmesg | grep -iq "kvm"; then
+            echo -e "${ERROR_MSG}KVM is not installed, loaded as a module, or compiled into the kernel."
+            exit 1
+        else
+            echo -e "${INFO_MSG}KVM is not present as a module, but appears to be compiled into the kernel (based on dmesg)."
+        fi
+    fi
+
+    # Check if /dev/kvm exists
+    if [ ! -e /dev/kvm ]; then
+        echo -e "${ERROR_MSG}/dev/kvm does not exist. KVM may not be fully configured for your user."
+        exit 1
+    fi
+
+    # Check if KVM is supported by CPU
+    # if ! grep -E "svm|vmx" /proc/cpuinfo > /dev/null; then
+    #     echo -e "${ERROR_MSG}CPU does not support hardware virtualization (Intel VT-x or AMD-V)."
+    #     exit 1
+    # fi
+
+    echo -e "${SUCCESS_MSG}KVM appears to be installed and your CPU supports virtualization."
+}
+
+# Function to check if CPU supports hardware virtualization
+check_cpu_virtualization() {
+    echo -e "${INFO_MSG}Checking CPU virtualization support..."
+
+    ARCH=$(uname -m)
+
+    if [[ "$ARCH" == "x86_64" ]]; then
+        # Check for Intel VT-x (vmx) or AMD-V (svm)
+        if ! grep -E "vmx|svm" /proc/cpuinfo > /dev/null; then
+            echo -e "${ERROR_MSG}CPU does not support hardware virtualization (Intel VT-x or AMD-V)."
+            exit 1
+        else
+            echo -e "${SUCCESS_MSG}CPU supports hardware virtualization (vmx/svm)."
+        fi
+    elif [[ "$ARCH" == "aarch64" ]]; then
+        # On ARM64, look for 'virt' feature or KVM VHE support in dmesg (requires sudo)
+        if grep -qw "virt" /proc/cpuinfo; then
+            echo -e "${SUCCESS_MSG}ARM64 CPU reports virtualization support (virt flag present)."
+        elif sudo dmesg | grep -q "kvm \[.*\]: VHE mode initialized successfully"; then
+            echo -e "${SUCCESS_MSG}ARM64 CPU supports virtualization (KVM with VHE mode initialized)."
+        else
+            echo -e "${ERROR_MSG}ARM64 CPU does not appear to support virtualization or EL2/VHE is not enabled."
+            exit 1
+        fi
+    else
+        echo -e "${ERROR_MSG}Unsupported architecture: $ARCH. Skipping virtualization check."
+        exit 1
+    fi
+}
+
+# Function to check if IOMMU is enabled
+check_iommu() {
+    # Check if IOMMU is enabled in the boot parameters (use sudo for dmesg)
+    if ! sudo dmesg | grep -i iommu | grep -q 'enabled'; then
+        echo -e "${WARNING_MSG}IOMMU is not enabled in the kernel. You might not be able to use PCI passthrough."
+    fi
+
+    # Check if IOMMU is present in /sys or /proc
+    if [ ! -d "/sys/kernel/iommu_groups" ]; then
+        echo -e "${WARNING_MSG}IOMMU groups are not available. Please check your IOMMU configuration."
+    else
+        echo -e "${SUCCESS_MSG}IOMMU groups are available. PCI passthrough and advanced features should work."
+    fi
+}
+
+# Function to check for placeholder
+check_for_placeholder() {
+    local config_string="$1"
+    local placeholder_pattern_string="$2"
+
+    # Check for placeholder
+    if [[ "${config_string}" != *"${placeholder_pattern_string}"* ]]; then
+        return 1
+    else
+        return 0
+    fi
+}
+
+UPDATED_NETWORK_CONFIG=""
+
+# Function to resolve tap interface and replace the placeholder
+resolve_tap_interface() {
+    local config_string="$1"
+    local placeholder="ifname=tap#"
+
+    # Check for placeholder
+    check_for_placeholder "${config_string}" "${placeholder}"
+    if [[ $? -ne 0 ]]; then
+        echo -e "${ERROR_MSG}No ${placeholder} found in the config."
+        return 1
+    else
+        echo -e "${INFO_MSG}A ${placeholder} found in the config."
+    fi
+
+    # Get existing tap interface on the host (it may requires sudo)
+    local existing_taps
+    existing_taps=$(sudo ifconfig -a | grep -oE '^tap[0-9]+' | sort -u)
+
+    if [[ -z "${existing_taps}" ]]; then
+        echo -e "${ERROR_MSG}No tap interfaces exist on the host system."
+        return 1
+    fi
+
+    # Get list of tap interfaces used by running QEMU VMs
+    local system_used_taps
+    system_used_taps=$(pgrep -a qemu-system | grep -oE 'ifname=tap[0-9]+' | cut -d= -f2 | sort -u)
+
+    # Find first available tap interface that exists and is not in use
+    for tap in ${existing_taps}; do
+        if ! echo "${system_used_taps}" | grep -q "^${tap}$"; then
+            echo -e "${INFO_MSG}Resolved placeholder to ${WHITE}${tap}${ENDCOLOR}"
+            UPDATED_NETWORK_CONFIG="${config_string/$placeholder/ifname=$tap}"
+            return 0
+        fi
+    done
+
+    echo -e "${ERROR_MSG}No available tap interfaces. All are currently in use."
+    return 1
+}
+
+allow_bridge_brx() {
+    local config_file="/etc/qemu/bridge.conf"
+    local bridge_name="${BRIDGE}"
+
+     # Check if the file exists; if not, create it
+    if [[ ! -f "${config_file}" ]]; then
+        echo -e "${INFO_MSG}Creating '${WHITE}${config_file}${ENDCOLOR}'..."
+        echo "allow ${bridge_name}" | sudo tee "${config_file}" > /dev/null
+    else
+        # If the bridge is not already allowed, add it
+        if ! grep -Fxq "allow ${bridge_name}" "${config_file}"; then
+            echo -e "${INFO_MSG}Adding allow rule for '${WHITE}${bridge_name}${ENDCOLOR}' to '${WHITE}${config_file}${ENDCOLOR}'..."
+            echo "allow $bridge_name" | sudo tee -a "$config_file" > /dev/null
+        else
+            echo -e "${WARNING_MSG}Bridge '${WHITE}${bridge_name}${ENDCOLOR}' already allowed in '${WHITE}${config_file}${ENDCOLOR}'."
+        fi
+    fi
+
+    # Ensure correct permissions
+    sudo chmod 644 "${config_file}"
+}
+
+# Check if QCOW2 image is in use
+is_qcow2_locked() {
+    local image_path="$1"
+
+    # Check if the image exists
+    if [[ ! -f "${image_path}" ]]; then
+        #echo -e "${ERROR_MSG}The specified image '${WHITE}${image_path}${ENDCOLOR}' does not exist."
+        return 2
+    fi
+
+    # Use lsof to check if the image is open by any process, specifically QEMU/KVM
+    if lsof "${image_path}" | grep -q "qemu"; then
+        #echo -e "${WARNING_MSG}The image '${WHITE}${image_path}${ENDCOLOR}' is currently in use by QEMU/KVM."
+        return 0
+    else
+        #echo -e "${INFO_MSG}The image '${WHITE}${image_path}${ENDCOLOR}' is not in use by QEMU/KVM."
+        return 1
+    fi
+}
+
+SNAPSHOT_PATH=""
+
+qcow2_snapshot_manager() {
+    local base_image="$1"
+    local base_dir=$(dirname "$base_image")  # Get the directory of the base image
+    local base_name=$(basename "$base_image" .qcow2)  # Remove .qcow2 extension to match the snapshot pattern
+    local snapshots=()  # Array to hold the list of snapshot files
+
+    # Check if the base image exists
+    if [[ ! -f "${base_image}" ]]; then
+        echo -e "${ERROR_MSG}The specified image '${WHITE}${base_image}${ENDCOLOR}' does not exist."
+        exit 1  # Exit if the base image doesn't exist
+    fi
+
+    # Get all snapshot files that start with the base name and have the .qcow2 extension
+    snapshots=($(find "$base_dir" -maxdepth 1 -type f -name "${base_name}-snapshot-*.qcow2"))
+
+    local snapshot_count=${#snapshots[@]}
+
+    if [[ ${snapshot_count} -eq 0 ]]; then
+        # No external snapshots found, create a new snapshot
+        local new_snapshot="${base_image%.*}-snapshot-1.qcow2"
+        qemu-img create -f qcow2 -b "$(realpath "${base_image}")" -F qcow2 "${new_snapshot}" > /dev/null 2>&1
+        SNAPSHOT_PATH=${new_snapshot}
+        echo -e "${SUCCESS_MSG}New snapshot created: ${WHITE}${new_snapshot}${ENDCOLOR}"
+    else
+        # Display list of existing snapshots
+        echo -e "${INFO_MSG}Existing snapshots:"
+        for i in "${!snapshots[@]}"; do
+            echo -e "${INFO_MSG}${YELLOW}$((i+1))${ENDCOLOR}. ${snapshots[$i]}"
+        done
+
+        # Ask for choice to create a new snapshot or select an existing one
+        echo -e "${INFO_MSG}Choose an option:"
+        echo -e "${INFO_MSG}${YELLOW}1${ENDCOLOR}. Create a new snapshot"
+        echo -e "${INFO_MSG}${YELLOW}2${ENDCOLOR}. Select an existing snapshot"
+
+        echo -e -n "${INFO_MSG}"
+        read -p "Enter your choice (1 or 2): " choice
+
+        if [[ "${choice}" == "1" ]]; then
+            # Generate new snapshot name with increment
+            local index=1
+            while [[ -f "${base_image%.*}-snapshot-$index.qcow2" ]]; do
+                ((index++))
+            done
+            local new_snapshot="${base_image%.*}-snapshot-${index}.qcow2"
+            qemu-img create -f qcow2 -b "$(realpath "${base_image}")" -F qcow2 "${new_snapshot}" > /dev/null 2>&1
+            SNAPSHOT_PATH=${new_snapshot}
+            echo -e "${SUCCESS_MSG}New snapshot created: ${WHITE}${new_snapshot}${ENDCOLOR}"
+        elif [[ "${choice}" == "2" ]]; then
+            # Ask user to select an existing snapshot only once
+            echo -e -n "${INFO_MSG}"
+            read -p "Enter the snapshot index: " snapshot_index
+            if [[ "${snapshot_index}" -gt 0 && "${snapshot_index}" -le "${snapshot_count}" ]]; then
+                SNAPSHOT_PATH="${snapshots[$((snapshot_index-1))]}"
+                is_qcow2_locked "${SNAPSHOT_PATH}"
+
+                case $? in
+                    0)  # Image is in use by QEMU/KVM
+                        echo -e "${WARNING_MSG}The image '${WHITE}${SNAPSHOT_PATH}${ENDCOLOR}' is currently in use by QEMU/KVM."
+                        exit 1
+                        ;;
+                    1)
+                        echo -e "${INFO_MSG}The image '${WHITE}${SNAPSHOT_PATH}${ENDCOLOR}' is not in use and can be safely used."
+                        ;;
+                    2)
+                        echo -e "${ERROR_MSG}The specified image '${WHITE}${SNAPSHOT_PATH}${ENDCOLOR}' does not exist."
+                        exit 1
+                        ;;
+                    *)
+                        echo -e "${ERROR_MSG}An unknown error occurred."
+                        exit 1
+                        ;;
+                esac
+            else
+                echo -e "${ERROR_MSG}Invalid selection. Exiting."
+                exit 1
+            fi
+        else
+            echo -e "${ERROR_MSG}Invalid selection. Exiting."
+            exit 1
+        fi
+    fi
+}
+
+# Function to merge a base image and a snapshot in a single standalone image
+merge_qcow2_snapshot() {
+    local base_image="$1"
+    local snapshot_image="$2"
+    local merged_image="$3"
+
+    if [[ ! -f "${base_image}" ]]; then
+        echo -e "${ERROR_MSG}Base image '${WHITE}${base_image}${ENDCOLOR}' not found."
+        return 1
+    fi
+
+    if [[ ! -f "${snapshot_image}" ]]; then
+        echo -e "${ERROR_MSG}Snapshot image '${WHITE}${snapshot_image}${ENDCOLOR}' not found."
+        return 1
+    fi
+
+    echo -e "${INFO_MSG}Merging '${WHITE}${base_image}${ENDCOLOR}' into '${WHITE}${snapshot_image}${ENDCOLOR}'..."
+
+    qemu-img convert -O qcow2 -c -p "${snapshot_image}" "${merged_image}"
+
+    # Check if merged image is standalone
+    if qemu-img info "${merged_image}" | grep -q "backing file"; then
+        echo -e "${ERROR_MSG}Merged image still has a backing file. Merged failed."
+        return 1
+    fi
+
+    echo -e "${INFO_MSG}Removing snapshot image '${WHITE}${snapshot_image}${ENDCOLOR}'..."
+    rm -v "${snapshot_image}"
+
+    echo -e "${SUCCESS_MSG}Merge complete."
+}
+
+# Default values
+# Check for boot option argument
+BOOT_OPTION="disk" # Pass "iso" to boot from ISO, or "disk" to boot from disk
+SNAPSHOT_MODE=false
+MERGE_MODE=false
+IS_MERGED=false
+MERGED_IMAGE=""
+
+# Function to display help
+show_help() {
+    echo -e "Usage: $0 ${WHITE}[OPTIONS]${ENDCOLOR}"
+    echo -e "  ${WHITE}-i, --iso${ENDCOLOR}          Boot from ISO image"
+    echo -e "  ${WHITE}-d, --disk${ENDCOLOR}         Boot from disk image (${WHITE}default${ENDCOLOR})"
+    echo -e "  ${WHITE}-s, --snapshot${ENDCOLOR}     Run in snapshot mode (${WHITE}changes will not be saved${ENDCOLOR})"
+    echo -e "  ${WHITE}-m, --merge <file>${ENDCOLOR} Merge the base image and the snapshot into a new image (${WHITE}the base image is retained and the snapshot is deleted${ENDCOLOR})"
+    echo -e "  ${WHITE}-h, --help${ENDCOLOR}         Show this help message and exit"
+    exit 1
+}
+
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        -i|--iso)
+            BOOT_OPTION="iso"
+            shift
+            ;;
+        -d|--disk)
+            BOOT_OPTION="disk"
+            shift
+            ;;
+        -s|--snapshot)
+            SNAPSHOT_MODE=true
+            shift
+            ;;
+        -m|--merge)
+            MERGE_MODE=true
+            shift
+            if [[ -z "$1" || "$1" == -* ]]; then
+                echo -e "${ERROR_MSG}[${WHITE}✘${ENDCOLOR}] Missing path after --merge"
+                exit 1
+            fi
+            MERGED_IMAGE="$1"
+            shift
+            ;;
+        -h|--help)
+            show_help
+            exit 0
+            ;;
+        *)
+            echo -e "${WARNING}Warning: Unknown argument '$1'"
+            show_help
+            exit 1
+            ;;
+    esac
+done
+
+is_port_in_use() {
+    ss -tln | awk '{print $4}' | grep -qE '(^|[^0-9])'"$1"'$'
+}
+
+while is_port_in_use ${SPICE_PORT}; do
+    echo -e "${WARNING_MSG}Port ${WHITE}${SPICE_PORT}${ENDCOLOR} is in use. Trying next available port..."
+    SPICE_PORT=$((SPICE_PORT + 2))
+
+    if [ "${SPICE_PORT}" -gt "${SPICE_MAX_PORT}" ]; then
+        echo -e "${ERROR_MSG}No available ports in range ${SPICE_BASE_PORT}-${MAX_PORT}" >&2
+        exit 1
+    fi
+done
+
+echo -e "${INFO_MSG}Using available SPICE port: ${WHITE}${SPICE_PORT}${ENDCOLOR}"
+
+while is_port_in_use ${SSH_PORT}; do
+    echo -e "${WARNING_MSG}Port ${WHITE}${SSH_PORT}${ENDCOLOR} is in use. Trying next available port..."
+    SSH_PORT=$((SSH_PORT + 2))
+
+    if [ "${SSH_PORT}" -gt "${SSH_MAX_PORT}" ]; then
+        echo -e "${ERROR_MSG}No available ports in range ${SSH_BASE_PORT}-${SSH_PORT}" >&2
+        exit 1
+    fi
+done
+
+echo -e "${INFO_MSG}Using available SSH port: ${WHITE}${SSH_PORT}${ENDCOLOR}"
+
+# Re-evaluate NETWORK and SPICE variables
+NETWORK=$(eval echo "${NETWORK}")
+SPICE=$(eval echo "${SPICE}")
+
+DOES_DISK_IMAGE_EXSISTS=true
+
+# Create disk image if it doesn't exist
+if [ ! -f "${DISK_IMAGE}" ]; then
+    echo -e "${INFO_MSG}Creating disk image at ${DISK_IMAGE} with size ${DISK_SIZE}..."
+    qemu-img create -f "${DISK_FORMAT}" "${DISK_IMAGE}" "${DISK_SIZE}"
+    DOES_DISK_IMAGE_EXSISTS=false
+fi
+
+if [ "${BOOT_OPTION}" == "iso" ]; then
+    BOOT_CMD="-drive file=${ISO_PATH},media=cdrom,if=virtio -boot d"  # Boot from ISO using the drive option
+else
+    BOOT_CMD="-boot c"  # Boot from disk
+fi
+
+if [ "${SNAPSHOT_MODE}" == true ]; then
+    echo -e "${INFO_MSG}Running in snapshot mode: changes will not be saved to the base image."
+    DISK_CMD="-drive file=${DISK_IMAGE},format=${DISK_FORMAT},if=virtio,index=1,snapshot=on"
+else
+    if [[ "${BOOT_OPTION}" == "iso" || "${DOES_DISK_IMAGE_EXSISTS}" == false ]]; then
+        DISK_CMD="-drive file=${DISK_IMAGE},format=${DISK_FORMAT},if=virtio,index=1"
+    else
+        qcow2_snapshot_manager "${DISK_IMAGE}"
+        DISK_CMD="-drive file=${SNAPSHOT_PATH},format=${DISK_FORMAT},if=virtio,index=1"
+        if [[ "${MERGE_MODE}" == true ]]; then
+            IS_MERGED=true
+        fi
+    fi
+fi
+
+echo -e "${INFO_MSG}Checking dependencies..."
+
+check_jq
+check_qemu
+check_qemu_version
+
+echo -e "${INFO_MSG}Checking KVM and IOMMU configuration..."
+
+# Check if root is needed for dmesg
+if [ "$(id -u)" -ne 0 ]; then
+    echo -e "${INFO_MSG}This script requires sudo access for checking dmesg logs. Please provide your password to continue."
+    sudo -v
+fi
+
+check_cpu_virtualization
+check_kvm
+check_iommu
+
+USB_DEVICES=$(add_usb_devices "${USB_DEVICE_NAMES[@]}")
+
+# Construct and print the parameters for virtio-fs sharing
+# SHARE_PARAM=$(construct_qemu_share_params "virtio-fs" "share" "${FOLDERS_TO_SHARE[@]}")
+
+# Alternatively, you can construct 9p parameters:
+SHARE_PARAM=$(construct_qemu_share_params "9p" "share" "${FOLDERS_TO_SHARE[@]}")
+
+# Checks that a tap interface is requested in the configuration
+check_for_placeholder "${NETWORK}" "ifname=tap#"
+if [[ $? -eq 0 ]]; then
+    resolve_tap_interface "${NETWORK}"
+    if [[ $? -ne 0 ]]; then
+        echo -e "${ERROR_MSG}Please check the configuration of the tap interfaces."
+        exit 1
+    else
+        NETWORK="${UPDATED_NETWORK_CONFIG}"
+    fi
+fi
+
+# Checks that a brige is requested in the configuration
+check_for_placeholder "${NETWORK}" "${BRIDGE}"
+if [[ $? -eq 0 ]]; then
+    allow_bridge_brx
+fi
+
+echo -e "${INFO_MSG}The symbolic link ${CONFIG_FILE} points to the following file: "
+echo -e "${INFO_MSG}\t$(readlink -f ${CONFIG_FILE})"
+
+if [[ "${IS_MERGED}" == true ]]; then
+    merge_qcow2_snapshot "${DISK_IMAGE}" "${SNAPSHOT_PATH}" "${MERGED_IMAGE}"
+    exit 0
+fi
+
+# Define log file (can be adjusted)
+LOG_FILE="/tmp/qemu_vm_command.log"
+
+# Build and show the QEMU command
+echo -e "${INFO_MSG}${WHITE}QEMU command to be executed:${ENDCOLOR}"
+{
+    echo -e "${INFO_MSG}${QEMU} \\"
+    echo -e "${INFO_MSG}    -machine ${MACHINE} \\"
+    echo -e "${INFO_MSG}    -m \"${MEMORY}\" \\"
+    echo -e "${INFO_MSG}    -smp \"${CPUS}\" \\"
+    echo -e "${INFO_MSG}    -cpu host \\"
+    echo -e "${INFO_MSG}    ${VGA} \\"
+    echo -e "${INFO_MSG}    ${SCREEN} \\"
+    echo -e "${INFO_MSG}    ${DISK_CMD} \\"
+    echo -e "${INFO_MSG}    ${BOOT_CMD} \\"
+    echo -e "${INFO_MSG}    ${NETWORK} \\"
+    echo -e "${INFO_MSG}    ${USB_EHCI} \\"
+    echo -e "${INFO_MSG}    ${USB_REDIR} \\"
+    for usb in "${USB_DEVICES[@]}"; do
+        echo -e "${INFO_MSG}    ${usb} \\"
+    done
+    echo -e "${INFO_MSG}    ${SPICE} \\"
+    echo -e "${INFO_MSG}    ${QGA} \\"
+    for share in "${SHARE_PARAM[@]}"; do
+        echo -e "${INFO_MSG}    ${share} \\"
+    done
+    echo -e "${INFO_MSG}    ${MISC}"
+    # Uncomment below if needed
+    # echo -e "${INFO_MSG}    ${SOUND} \\"
+    # echo -e "${INFO_MSG}    ${XILINX_FPGA} \\"
+} | tee "${LOG_FILE}"
+
+# Launch the VM
+echo -e "${INFO_MSG}Starting the VM ${VM_NAME}..."
+
+if [ -z "${KERNEL_ARG}" ]; then
+    ${QEMU} \
+        -machine "${MACHINE}" \
+        -m "${MEMORY}" \
+        -smp "${CPUS}" \
+        -cpu host \
+        ${VGA} \
+        ${SCREEN} \
+        ${DISK_CMD} \
+        ${BOOT_CMD} \
+        ${NETWORK} \
+        ${USB_EHCI} \
+        ${USB_REDIR} \
+        ${USB_DEVICES[@]} \
+        ${SPICE} \
+        ${QGA} \
+        ${SHARE_PARAM[@]}
+else
+    ${QEMU} \
+        -machine "${MACHINE}" \
+        -m "${MEMORY}" \
+        -smp "${CPUS}" \
+        -cpu host \
+        ${VGA} \
+        ${SCREEN} \
+        ${DISK_CMD} \
+        ${BOOT_CMD} \
+        ${NETWORK} \
+        ${USB_EHCI} \
+        ${USB_REDIR} \
+        ${USB_DEVICES[@]} \
+        ${SPICE} \
+        ${QGA} \
+        ${SHARE_PARAM[@]} \
+        ${MISC} "${KERNEL_ARG}"
+fi
+
+#     #${SOUND} \
+#     #${XILINX_FPGA}

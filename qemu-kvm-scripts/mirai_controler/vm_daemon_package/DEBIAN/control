@@ -1,0 +1,7 @@
+Package: vm-daemon
+Version: 1.0
+Section: misc
+Priority: optional
+Architecture: aarch64
+Maintainer: Packager <joachim.schmidt@hesge.ch>
+Description: Auto-built package for vm_daemon.

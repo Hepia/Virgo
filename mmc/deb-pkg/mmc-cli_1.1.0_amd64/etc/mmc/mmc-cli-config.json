@@ -1,0 +1,5 @@
+{
+    "multicast_group": "ff02::1",
+    "port": 12345,
+    "interface": "eth0"
+} 

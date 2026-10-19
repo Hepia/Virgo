@@ -1,0 +1,10 @@
+[Unit]
+Description=Host Daemon
+After=network.target
+
+[Service]
+ExecStart=/usr/local/bin/host_daemon
+Restart=always
+
+[Install]
+WantedBy=multi-user.target

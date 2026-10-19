@@ -1,0 +1,10 @@
+{
+    "unix_socket_path": "/tmp/mmc.socket",
+    "multicast_group": "ff02::1",
+    "listen_interface": "eth0",
+    "log_file": "/var/log/mmc-host.log",
+    "response_message": "OK",
+    "hash": "undef",
+    "unix_socket_retry_delay": 20,
+    "unix_socket_retry_count": 0
+} 

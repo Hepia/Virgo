@@ -1,0 +1,7 @@
+Package: mmc-cli
+Version: 1.1.0
+Architecture: amd64
+Maintainer: MMC Maintainer <maintainer@example.com>
+Description: MMC (Message to Machine Communication) - mmc-cli
+ Component of the MMC system for sending messages to virtual machines.
+Depends: libjson-c5, libreadline8, libssl3

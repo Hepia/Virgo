@@ -1,0 +1,4 @@
+#!/bin/bash
+systemctl daemon-reload
+systemctl enable mmc-host-daemon
+systemctl start mmc-host-daemon

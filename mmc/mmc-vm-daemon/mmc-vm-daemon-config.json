@@ -1,0 +1,7 @@
+{
+  "serial_device": "/dev/virtio-ports/mmc0",
+  "log_file": "/var/log/mmc-vm.log",
+  "remote_ip": "127.0.0.1",
+  "remote_port": 101,
+  "tcp_response_timeout": 10
+} 

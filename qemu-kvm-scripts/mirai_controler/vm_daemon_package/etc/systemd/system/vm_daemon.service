@@ -1,0 +1,10 @@
+[Unit]
+Description=VM Daemon
+After=network.target
+
+[Service]
+ExecStart=/usr/local/bin/vm_daemon
+Restart=always
+
+[Install]
+WantedBy=multi-user.target

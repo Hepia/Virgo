@@ -1,0 +1,9 @@
+{
+    "BRIDGE_NAME": "br0",
+    "NUMBER_OF_TAP_INTERFACES": "3",
+    "DHCP_RANGE_START": "192.168.100.10",
+    "DHCP_RANGE_END": "192.168.100.100",
+    "SSH": "true",
+    "SSH_PORT": "4022",
+    "SSH_CONFIG": "/etc/ssh/sshd_config"
+}

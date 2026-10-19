@@ -1,0 +1,8 @@
+{
+  "rtspAddress": ":8554",
+  "paths": {
+    "all": {
+      "source": "publisher"
+    }
+  }
+}

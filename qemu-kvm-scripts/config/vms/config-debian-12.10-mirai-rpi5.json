@@ -1,0 +1,19 @@
+{
+    "QEMU": "qemu-system-aarch64",
+    "VM_NAME": "debian-12.10-mirai-rpi5-vm",
+    "MACHINE": "virt,accel=kvm",
+    "MEMORY": "1G",
+    "CPUS": "4",
+    "DISK_IMAGE": "disk-images/debian-12.10-mirai-rpi5.qcow2",
+    "DISK_SIZE": "50G",
+    "DISK_FORMAT": "qcow2",
+    "ISO_PATH": "isos/debian-12.10.0-arm64-netinst.iso",
+    "USERNAME_1": "yoda",
+    "FOLDERS_TO_SHARE": ["/home/${USERNAME_1}"],
+    "SPICE_IP_ADDR": "0.0.0.0",
+    "_SPICE_IP_ADDR": "127.0.0.1",
+    "SPICE_PORT": "5900",
+    "SSH_PORT": "4000",
+    "USB_DEVICE_NAMES": ["FT232H"],
+    "DRIVER_FILE": "config/drivers/drivers.json"
+}
