@@ -11,6 +11,20 @@
 *.pid
 *.pid.lock
 
+*.o
+*.obj
+*.a
+*.so
+*.so.*
+*.out
+*.exe
+*.dll
+*.dylib
+*.d
+*.gcda
+*.gcno
+*.gcov
+
 .DS_Store
 Thumbs.db
 .Trash-*/
